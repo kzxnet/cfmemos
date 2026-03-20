@@ -1,3 +1,5 @@
+import { callTelegramApi } from './telegram.js';
+
 /**
  * 发送 Webhook 通知
  * @param {string} webhookUrl - Webhook URL
@@ -91,22 +93,12 @@ export async function sendTelegramNotification(botToken, chatId, memoData, insta
       message += `\n\n🔗 <a href="${memoUrl}">查看详情</a>`;
     }
 
-    const telegramApiUrl = `https://api.telegram.org/bot${botToken}/sendMessage`;
-
-    const response = await fetch(telegramApiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: message,
-        parse_mode: 'HTML',
-        disable_web_page_preview: false,
-      }),
+    const result = await callTelegramApi(botToken, 'sendMessage', {
+      chat_id: chatId,
+      text: message,
+      parse_mode: 'HTML',
+      disable_web_page_preview: false,
     });
-
-    const result = await response.json();
 
     if (!result.ok) {
       console.error('Telegram notification failed:', result);
@@ -123,7 +115,7 @@ export async function sendTelegramNotification(botToken, chatId, memoData, insta
  * @param {object} db - 数据库连接
  * @param {object} memoData - Memo 数据
  */
-export async function sendAllNotifications(db, memoData) {
+export async function sendAllNotifications(db, memoData, options = {}) {
   console.log('🔔 sendAllNotifications called for memo:', memoData.id);
 
   try {
@@ -192,11 +184,12 @@ export async function sendAllNotifications(db, memoData) {
     }
 
     // 发送 Telegram 通知
-    if (telegramBotToken && telegramUserId) {
+    if (!options.skipTelegram && telegramBotToken && telegramUserId) {
       console.log('📱 Adding Telegram notification to queue for user:', telegramUserId);
       promises.push(sendTelegramNotification(telegramBotToken, telegramUserId, memoData, instanceUrl));
     } else {
       console.log('⚠️  Telegram notification not queued:', {
+        skipTelegram: Boolean(options.skipTelegram),
         hasBotToken: !!telegramBotToken,
         hasTelegramUserId: !!telegramUserId
       });

@@ -12,6 +12,7 @@ import rssApp from './handlers/rss';
 import accessTokensApp from './handlers/accessTokens';
 import webhooksApp from './handlers/webhooks';
 import identityProvidersApp from './handlers/identityProviders';
+import telegramApp from './handlers/telegram';
 
 const app = new Hono();
 
@@ -41,6 +42,7 @@ app.route('/api/v1/settings', settingsApp);
 app.route('/api/v1/system/setting', settingsApp);  // 系统设置路由（前端使用这个路径）
 app.route('/api/v1/webhook', webhooksApp);  // Webhook 路由
 app.route('/api/v1/idp', identityProvidersApp);  // Identity Providers 路由
+app.route('/api/v1/telegram', telegramApp);  // Telegram 集成路由
 
 // Storage 路由 - 返回空列表（暂时未实现）
 app.get('/api/v1/storage', async (c) => {
