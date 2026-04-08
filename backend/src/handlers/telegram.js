@@ -1,10 +1,18 @@
 import { Hono } from 'hono';
 import { jsonResponse, errorResponse, requireAdmin } from '../utils/auth.js';
-import { sendAllNotifications } from '../utils/notifications.js';
+import {
+  answerTelegramCallback,
+  editTelegramMemoNotification,
+  getTelegramVisibilityLabel,
+  parseTelegramMemoVisibilityCallbackData,
+  sendAllNotifications,
+  sendTelegramNotification,
+} from '../utils/notifications.js';
 import { callTelegramApi, sendTelegramText } from '../utils/telegram.js';
 import { attachTagToMemo } from '../utils/tags.js';
 
 const app = new Hono();
+const VALID_VISIBILITIES = ['PRIVATE', 'PROTECTED', 'PUBLIC'];
 
 function extractTagNames(content) {
   if (!content) {
@@ -91,6 +99,152 @@ async function createTelegramMemo(db, user, content) {
     visibility,
     tagNames,
   };
+}
+
+async function getMemoNotificationData(db, memoId, userId) {
+  const memoStmt = db.prepare(`
+    SELECT
+      m.id,
+      m.content,
+      m.visibility,
+      m.creator_id as creatorId,
+      m.created_ts as createdTs,
+      u.username as creatorUsername,
+      u.nickname as creatorName
+    FROM memos m
+    LEFT JOIN users u ON m.creator_id = u.id
+    WHERE m.id = ? AND m.creator_id = ? AND m.row_status = 'NORMAL'
+  `);
+  const memo = await memoStmt.bind(memoId, userId).first();
+
+  if (!memo) {
+    return null;
+  }
+
+  const tagsStmt = db.prepare(`
+    SELECT t.name
+    FROM tags t
+    INNER JOIN memo_tags mt ON mt.tag_id = t.id
+    WHERE mt.memo_id = ?
+    ORDER BY t.name ASC
+  `);
+  const resourcesStmt = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM memo_resources
+    WHERE memo_id = ?
+  `);
+
+  const [{ results: tags }, resourceCount] = await Promise.all([
+    tagsStmt.bind(memoId).all(),
+    resourcesStmt.bind(memoId).first(),
+  ]);
+
+  return {
+    ...memo,
+    creatorName: memo.creatorName || memo.creatorUsername,
+    tags: (tags || []).map((tag) => tag.name),
+    resourceCount: resourceCount?.count || 0,
+  };
+}
+
+async function updateMemoVisibility(db, memoId, userId, visibility) {
+  if (!VALID_VISIBILITIES.includes(visibility)) {
+    return false;
+  }
+
+  const result = await db.prepare(`
+    UPDATE memos
+    SET visibility = ?, updated_ts = ?
+    WHERE id = ? AND creator_id = ? AND row_status = 'NORMAL'
+  `).bind(
+    visibility,
+    Math.floor(Date.now() / 1000),
+    memoId,
+    userId,
+  ).run();
+
+  return result.changes > 0;
+}
+
+async function handleCallbackQuery(db, telegramBotToken, instanceUrl, update) {
+  const callbackQuery = update?.callback_query;
+  if (!callbackQuery) {
+    return null;
+  }
+
+  const callbackQueryId = callbackQuery.id;
+  const chatId = String(callbackQuery.message?.chat?.id ?? '');
+  const messageId = callbackQuery.message?.message_id;
+  const fromId = String(callbackQuery.from?.id ?? '');
+  const parsedAction = parseTelegramMemoVisibilityCallbackData(callbackQuery.data);
+
+  if (!callbackQueryId || !chatId || !fromId || !messageId) {
+    return jsonResponse({ ok: true, ignored: 'invalid-callback-query' });
+  }
+
+  if (!parsedAction) {
+    await answerTelegramCallback(telegramBotToken, callbackQueryId, '不支持的操作');
+    return jsonResponse({ ok: true, ignored: 'unknown-callback-action' });
+  }
+
+  const boundUser = await findUserByTelegramId(db, [chatId, fromId]);
+  if (!boundUser) {
+    await answerTelegramCallback(telegramBotToken, callbackQueryId, '当前 Telegram 账号未绑定 Memos 用户', true);
+    return jsonResponse({ ok: true, ignored: 'telegram user not bound' });
+  }
+
+  const currentMemo = await getMemoNotificationData(db, parsedAction.memoId, boundUser.id);
+  if (!currentMemo) {
+    await answerTelegramCallback(telegramBotToken, callbackQueryId, 'Memo 不存在或你没有权限修改', true);
+    return jsonResponse({ ok: true, ignored: 'memo-not-found' });
+  }
+
+  if (currentMemo.visibility === parsedAction.visibility) {
+    await answerTelegramCallback(
+      telegramBotToken,
+      callbackQueryId,
+      `当前已是${getTelegramVisibilityLabel(currentMemo.visibility)}`,
+    );
+    return jsonResponse({
+      ok: true,
+      handled: 'memo-visibility-unchanged',
+      memoId: currentMemo.id,
+      visibility: currentMemo.visibility,
+    });
+  }
+
+  const updated = await updateMemoVisibility(db, parsedAction.memoId, boundUser.id, parsedAction.visibility);
+  if (!updated) {
+    await answerTelegramCallback(telegramBotToken, callbackQueryId, '更新可见性失败', true);
+    return jsonResponse({ ok: true, ignored: 'memo-visibility-update-failed' });
+  }
+
+  const refreshedMemo = await getMemoNotificationData(db, parsedAction.memoId, boundUser.id);
+  if (!refreshedMemo) {
+    await answerTelegramCallback(telegramBotToken, callbackQueryId, 'Memo 已不存在', true);
+    return jsonResponse({ ok: true, ignored: 'memo-not-found-after-update' });
+  }
+
+  try {
+    await editTelegramMemoNotification(telegramBotToken, chatId, messageId, refreshedMemo, instanceUrl);
+  } catch (error) {
+    if (!String(error?.message || error).includes('message is not modified')) {
+      throw error;
+    }
+  }
+
+  await answerTelegramCallback(
+    telegramBotToken,
+    callbackQueryId,
+    `已切换为${getTelegramVisibilityLabel(refreshedMemo.visibility)}`,
+  );
+
+  return jsonResponse({
+    ok: true,
+    handled: 'memo-visibility-updated',
+    memoId: refreshedMemo.id,
+    visibility: refreshedMemo.visibility,
+  });
 }
 
 async function getTelegramSettings(db) {
@@ -190,6 +344,11 @@ app.post('/webhook', async (c) => {
       return jsonResponse({ ok: true, ignored: 'telegram bot token not configured' });
     }
 
+    const callbackResult = await handleCallbackQuery(db, telegramBotToken, instanceUrl, update);
+    if (callbackResult) {
+      return callbackResult;
+    }
+
     const message = update?.message || update?.edited_message;
     if (!message) {
       return jsonResponse({ ok: true, ignored: 'unsupported update type' });
@@ -246,32 +405,27 @@ app.post('/webhook', async (c) => {
     }
 
     const memo = await createTelegramMemo(db, boundUser, content);
-    const memoUrl = instanceUrl ? `${instanceUrl}/m/${memo.memoId}` : '';
+    const notificationMemoData = {
+      id: memo.memoId,
+      content,
+      visibility: memo.visibility,
+      creatorId: boundUser.id,
+      creatorUsername: boundUser.username,
+      creatorName: boundUser.nickname || boundUser.username,
+      createdTs: memo.createdTs,
+      tags: memo.tagNames,
+      resourceCount: 0,
+    };
 
     c.executionCtx.waitUntil(
-      sendAllNotifications(db, {
-        id: memo.memoId,
-        content,
-        visibility: memo.visibility,
-        creatorId: boundUser.id,
-        creatorUsername: boundUser.username,
-        creatorName: boundUser.nickname || boundUser.username,
-        createdTs: memo.createdTs,
-        tags: memo.tagNames,
-        resourceCount: 0,
-      }, {
+      sendAllNotifications(db, notificationMemoData, {
         skipTelegram: true,
       }).catch((error) => {
         console.error('Error sending notifications for Telegram memo:', error);
       })
     );
 
-    const confirmationLines = [`已保存为 memo #${memo.memoId}。`];
-    if (memoUrl) {
-      confirmationLines.push(memoUrl);
-    }
-
-    await sendTelegramText(telegramBotToken, chatId, confirmationLines.join('\n'));
+    await sendTelegramNotification(telegramBotToken, chatId, notificationMemoData, instanceUrl);
 
     return jsonResponse({
       ok: true,

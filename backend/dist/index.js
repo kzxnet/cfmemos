@@ -2838,6 +2838,78 @@ async function sendTelegramText(botTokenOrBaseUrl, chatId, text, extraPayload = 
 __name(sendTelegramText, "sendTelegramText");
 
 // src/utils/notifications.js
+var TELEGRAM_MEMO_PREVIEW_LIMIT = 3800;
+var TELEGRAM_VISIBILITY_OPTIONS = ["PRIVATE", "PROTECTED", "PUBLIC"];
+var TELEGRAM_VISIBILITY_LABELS = {
+  PRIVATE: "\u79C1\u5BC6",
+  PROTECTED: "\u53D7\u4FDD\u62A4",
+  PUBLIC: "\u516C\u5F00"
+};
+function truncateTelegramText(text) {
+  if (text.length <= TELEGRAM_MEMO_PREVIEW_LIMIT) {
+    return text;
+  }
+  return `${text.slice(0, TELEGRAM_MEMO_PREVIEW_LIMIT)}
+...`;
+}
+__name(truncateTelegramText, "truncateTelegramText");
+function getTelegramMemoContent(memoData) {
+  const content = typeof memoData?.content === "string" ? memoData.content.trim() : "";
+  if (content) {
+    return truncateTelegramText(content);
+  }
+  if ((memoData?.resourceCount || 0) > 0) {
+    return `\u{1F4CE} \u6B64 memo \u4EC5\u5305\u542B ${memoData.resourceCount} \u4E2A\u9644\u4EF6`;
+  }
+  return "\uFF08\u65E0\u6587\u672C\u5185\u5BB9\uFF09";
+}
+__name(getTelegramMemoContent, "getTelegramMemoContent");
+function getTelegramVisibilityLabel(visibility) {
+  return TELEGRAM_VISIBILITY_LABELS[visibility] || visibility || "\u672A\u77E5";
+}
+__name(getTelegramVisibilityLabel, "getTelegramVisibilityLabel");
+function buildTelegramMemoVisibilityCallbackData(memoId, visibility) {
+  return `memo_visibility:${memoId}:${visibility}`;
+}
+__name(buildTelegramMemoVisibilityCallbackData, "buildTelegramMemoVisibilityCallbackData");
+function parseTelegramMemoVisibilityCallbackData(data) {
+  if (typeof data !== "string") {
+    return null;
+  }
+  const matched = data.match(/^memo_visibility:(\d+):(PRIVATE|PROTECTED|PUBLIC)$/);
+  if (!matched) {
+    return null;
+  }
+  return {
+    memoId: Number.parseInt(matched[1], 10),
+    visibility: matched[2]
+  };
+}
+__name(parseTelegramMemoVisibilityCallbackData, "parseTelegramMemoVisibilityCallbackData");
+function buildTelegramMemoNotificationText(memoData) {
+  return getTelegramMemoContent(memoData);
+}
+__name(buildTelegramMemoNotificationText, "buildTelegramMemoNotificationText");
+function buildTelegramMemoReplyMarkup(memoData, instanceUrl) {
+  const inlineKeyboard = [
+    TELEGRAM_VISIBILITY_OPTIONS.map((visibility) => ({
+      text: memoData.visibility === visibility ? `\u25CF ${getTelegramVisibilityLabel(visibility)}` : getTelegramVisibilityLabel(visibility),
+      callback_data: buildTelegramMemoVisibilityCallbackData(memoData.id, visibility)
+    }))
+  ];
+  if (instanceUrl) {
+    inlineKeyboard.push([
+      {
+        text: "\u6253\u5F00 Memo",
+        url: `${instanceUrl}/m/${memoData.id}`
+      }
+    ]);
+  }
+  return {
+    inline_keyboard: inlineKeyboard
+  };
+}
+__name(buildTelegramMemoReplyMarkup, "buildTelegramMemoReplyMarkup");
 async function sendWebhook(webhookUrl, memoData) {
   if (!webhookUrl || webhookUrl.trim() === "") {
     return;
@@ -2883,39 +2955,12 @@ async function sendTelegramNotification(botToken, chatId, memoData, instanceUrl)
     return;
   }
   try {
-    let message = `\u{1F195} <b>\u65B0 Memo</b>
-
-`;
-    message += `\u{1F464} <b>\u4F5C\u8005:</b> ${memoData.creatorName || memoData.creatorUsername}
-`;
-    message += `\u23F0 <b>\u65F6\u95F4:</b> ${new Date(memoData.createdTs * 1e3).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
-`;
-    message += `\u{1F512} <b>\u53EF\u89C1\u6027:</b> ${memoData.visibility === "PUBLIC" ? "\u516C\u5F00" : memoData.visibility === "PRIVATE" ? "\u79C1\u5BC6" : "\u53D7\u4FDD\u62A4"}
-`;
-    if (memoData.tags && memoData.tags.length > 0) {
-      message += `\u{1F3F7}\uFE0F <b>\u6807\u7B7E:</b> ${memoData.tags.map((t) => `#${t}`).join(" ")}
-`;
-    }
-    message += `
-\u{1F4DD} <b>\u5185\u5BB9:</b>
-`;
-    let content = memoData.content || "";
-    if (content.length > 500) {
-      content = content.substring(0, 500) + "...";
-    }
-    content = content.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    message += content;
-    if (instanceUrl) {
-      const memoUrl = `${instanceUrl}/m/${memoData.id}`;
-      message += `
-
-\u{1F517} <a href="${memoUrl}">\u67E5\u770B\u8BE6\u60C5</a>`;
-    }
+    const message = buildTelegramMemoNotificationText(memoData);
     const result = await callTelegramApi(botToken, "sendMessage", {
       chat_id: chatId,
       text: message,
-      parse_mode: "HTML",
-      disable_web_page_preview: false
+      disable_web_page_preview: true,
+      reply_markup: buildTelegramMemoReplyMarkup(memoData, instanceUrl)
     });
     if (!result.ok) {
       console.error("Telegram notification failed:", result);
@@ -2927,14 +2972,33 @@ async function sendTelegramNotification(botToken, chatId, memoData, instanceUrl)
   }
 }
 __name(sendTelegramNotification, "sendTelegramNotification");
+async function editTelegramMemoNotification(botToken, chatId, messageId, memoData, instanceUrl) {
+  if (!botToken || !chatId || !messageId) {
+    return;
+  }
+  return callTelegramApi(botToken, "editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    text: buildTelegramMemoNotificationText(memoData),
+    disable_web_page_preview: true,
+    reply_markup: buildTelegramMemoReplyMarkup(memoData, instanceUrl)
+  });
+}
+__name(editTelegramMemoNotification, "editTelegramMemoNotification");
+async function answerTelegramCallback(botToken, callbackQueryId, text, showAlert = false) {
+  if (!botToken || !callbackQueryId) {
+    return;
+  }
+  return callTelegramApi(botToken, "answerCallbackQuery", {
+    callback_query_id: callbackQueryId,
+    text,
+    show_alert: showAlert
+  });
+}
+__name(answerTelegramCallback, "answerTelegramCallback");
 async function sendAllNotifications(db, memoData, options = {}) {
   console.log("\u{1F514} sendAllNotifications called for memo:", memoData.id);
   try {
-    if (memoData.visibility !== "PUBLIC") {
-      console.log("\u23ED\uFE0F  Skipping notifications for non-public memo");
-      return;
-    }
-    console.log("\u2705 Memo is PUBLIC, proceeding with notifications");
     const userSettingStmt = db.prepare(`
       SELECT telegram_user_id
       FROM user_settings
@@ -6220,6 +6284,7 @@ var identityProviders_default = app12;
 // src/handlers/telegram.js
 init_auth();
 var app13 = new Hono2();
+var VALID_VISIBILITIES = ["PRIVATE", "PROTECTED", "PUBLIC"];
 function extractTagNames(content) {
   if (!content) {
     return [];
@@ -6297,6 +6362,135 @@ async function createTelegramMemo(db, user, content) {
   };
 }
 __name(createTelegramMemo, "createTelegramMemo");
+async function getMemoNotificationData(db, memoId, userId) {
+  const memoStmt = db.prepare(`
+    SELECT
+      m.id,
+      m.content,
+      m.visibility,
+      m.creator_id as creatorId,
+      m.created_ts as createdTs,
+      u.username as creatorUsername,
+      u.nickname as creatorName
+    FROM memos m
+    LEFT JOIN users u ON m.creator_id = u.id
+    WHERE m.id = ? AND m.creator_id = ? AND m.row_status = 'NORMAL'
+  `);
+  const memo = await memoStmt.bind(memoId, userId).first();
+  if (!memo) {
+    return null;
+  }
+  const tagsStmt = db.prepare(`
+    SELECT t.name
+    FROM tags t
+    INNER JOIN memo_tags mt ON mt.tag_id = t.id
+    WHERE mt.memo_id = ?
+    ORDER BY t.name ASC
+  `);
+  const resourcesStmt = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM memo_resources
+    WHERE memo_id = ?
+  `);
+  const [{ results: tags }, resourceCount] = await Promise.all([
+    tagsStmt.bind(memoId).all(),
+    resourcesStmt.bind(memoId).first()
+  ]);
+  return {
+    ...memo,
+    creatorName: memo.creatorName || memo.creatorUsername,
+    tags: (tags || []).map((tag) => tag.name),
+    resourceCount: resourceCount?.count || 0
+  };
+}
+__name(getMemoNotificationData, "getMemoNotificationData");
+async function updateMemoVisibility(db, memoId, userId, visibility) {
+  if (!VALID_VISIBILITIES.includes(visibility)) {
+    return false;
+  }
+  const result = await db.prepare(`
+    UPDATE memos
+    SET visibility = ?, updated_ts = ?
+    WHERE id = ? AND creator_id = ? AND row_status = 'NORMAL'
+  `).bind(
+    visibility,
+    Math.floor(Date.now() / 1e3),
+    memoId,
+    userId
+  ).run();
+  return result.changes > 0;
+}
+__name(updateMemoVisibility, "updateMemoVisibility");
+async function handleCallbackQuery(db, telegramBotToken, instanceUrl, update) {
+  const callbackQuery = update?.callback_query;
+  if (!callbackQuery) {
+    return null;
+  }
+  const callbackQueryId = callbackQuery.id;
+  const chatId = String(callbackQuery.message?.chat?.id ?? "");
+  const messageId = callbackQuery.message?.message_id;
+  const fromId = String(callbackQuery.from?.id ?? "");
+  const parsedAction = parseTelegramMemoVisibilityCallbackData(callbackQuery.data);
+  if (!callbackQueryId || !chatId || !fromId || !messageId) {
+    return jsonResponse({ ok: true, ignored: "invalid-callback-query" });
+  }
+  if (!parsedAction) {
+    await answerTelegramCallback(telegramBotToken, callbackQueryId, "\u4E0D\u652F\u6301\u7684\u64CD\u4F5C");
+    return jsonResponse({ ok: true, ignored: "unknown-callback-action" });
+  }
+  const boundUser = await findUserByTelegramId(db, [chatId, fromId]);
+  if (!boundUser) {
+    await answerTelegramCallback(telegramBotToken, callbackQueryId, "\u5F53\u524D Telegram \u8D26\u53F7\u672A\u7ED1\u5B9A Memos \u7528\u6237", true);
+    return jsonResponse({ ok: true, ignored: "telegram user not bound" });
+  }
+  const currentMemo = await getMemoNotificationData(db, parsedAction.memoId, boundUser.id);
+  if (!currentMemo) {
+    await answerTelegramCallback(telegramBotToken, callbackQueryId, "Memo \u4E0D\u5B58\u5728\u6216\u4F60\u6CA1\u6709\u6743\u9650\u4FEE\u6539", true);
+    return jsonResponse({ ok: true, ignored: "memo-not-found" });
+  }
+  if (currentMemo.visibility === parsedAction.visibility) {
+    await answerTelegramCallback(
+      telegramBotToken,
+      callbackQueryId,
+      `\u5F53\u524D\u5DF2\u662F${getTelegramVisibilityLabel(currentMemo.visibility)}`
+    );
+    return jsonResponse({
+      ok: true,
+      handled: "memo-visibility-unchanged",
+      memoId: currentMemo.id,
+      visibility: currentMemo.visibility
+    });
+  }
+  const updated = await updateMemoVisibility(db, parsedAction.memoId, boundUser.id, parsedAction.visibility);
+  if (!updated) {
+    await answerTelegramCallback(telegramBotToken, callbackQueryId, "\u66F4\u65B0\u53EF\u89C1\u6027\u5931\u8D25", true);
+    return jsonResponse({ ok: true, ignored: "memo-visibility-update-failed" });
+  }
+  const refreshedMemo = await getMemoNotificationData(db, parsedAction.memoId, boundUser.id);
+  if (!refreshedMemo) {
+    await answerTelegramCallback(telegramBotToken, callbackQueryId, "Memo \u5DF2\u4E0D\u5B58\u5728", true);
+    return jsonResponse({ ok: true, ignored: "memo-not-found-after-update" });
+  }
+  try {
+    await editTelegramMemoNotification(telegramBotToken, chatId, messageId, refreshedMemo, instanceUrl);
+  } catch (error) {
+    if (!String(error?.message || error).includes("message is not modified")) {
+      throw error;
+    }
+  }
+  await answerTelegramCallback(
+    telegramBotToken,
+    callbackQueryId,
+    `\u5DF2\u5207\u6362\u4E3A${getTelegramVisibilityLabel(refreshedMemo.visibility)}`
+  );
+  return jsonResponse({
+    ok: true,
+    handled: "memo-visibility-updated",
+    memoId: refreshedMemo.id,
+    visibility: refreshedMemo.visibility
+  });
+}
+__name(handleCallbackQuery, "handleCallbackQuery");
 async function getTelegramSettings(db) {
   const { results: settings } = await db.prepare(`
     SELECT key, value
@@ -6380,6 +6574,10 @@ app13.post("/webhook", async (c) => {
       console.warn("Telegram webhook called without telegram-bot-token configured");
       return jsonResponse({ ok: true, ignored: "telegram bot token not configured" });
     }
+    const callbackResult = await handleCallbackQuery(db, telegramBotToken, instanceUrl, update);
+    if (callbackResult) {
+      return callbackResult;
+    }
     const message = update?.message || update?.edited_message;
     if (!message) {
       return jsonResponse({ ok: true, ignored: "unsupported update type" });
@@ -6428,29 +6626,25 @@ app13.post("/webhook", async (c) => {
       return jsonResponse({ ok: true, ignored: "empty message" });
     }
     const memo = await createTelegramMemo(db, boundUser, content);
-    const memoUrl = instanceUrl ? `${instanceUrl}/m/${memo.memoId}` : "";
+    const notificationMemoData = {
+      id: memo.memoId,
+      content,
+      visibility: memo.visibility,
+      creatorId: boundUser.id,
+      creatorUsername: boundUser.username,
+      creatorName: boundUser.nickname || boundUser.username,
+      createdTs: memo.createdTs,
+      tags: memo.tagNames,
+      resourceCount: 0
+    };
     c.executionCtx.waitUntil(
-      sendAllNotifications(db, {
-        id: memo.memoId,
-        content,
-        visibility: memo.visibility,
-        creatorId: boundUser.id,
-        creatorUsername: boundUser.username,
-        creatorName: boundUser.nickname || boundUser.username,
-        createdTs: memo.createdTs,
-        tags: memo.tagNames,
-        resourceCount: 0
-      }, {
+      sendAllNotifications(db, notificationMemoData, {
         skipTelegram: true
       }).catch((error) => {
         console.error("Error sending notifications for Telegram memo:", error);
       })
     );
-    const confirmationLines = [`\u5DF2\u4FDD\u5B58\u4E3A memo #${memo.memoId}\u3002`];
-    if (memoUrl) {
-      confirmationLines.push(memoUrl);
-    }
-    await sendTelegramText(telegramBotToken, chatId, confirmationLines.join("\n"));
+    await sendTelegramNotification(telegramBotToken, chatId, notificationMemoData, instanceUrl);
     return jsonResponse({
       ok: true,
       memoId: memo.memoId

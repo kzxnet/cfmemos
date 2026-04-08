@@ -1,5 +1,86 @@
 import { callTelegramApi } from './telegram.js';
 
+const TELEGRAM_MEMO_PREVIEW_LIMIT = 3800;
+
+export const TELEGRAM_VISIBILITY_OPTIONS = ['PRIVATE', 'PROTECTED', 'PUBLIC'];
+
+const TELEGRAM_VISIBILITY_LABELS = {
+  PRIVATE: '私密',
+  PROTECTED: '受保护',
+  PUBLIC: '公开',
+};
+
+function truncateTelegramText(text) {
+  if (text.length <= TELEGRAM_MEMO_PREVIEW_LIMIT) {
+    return text;
+  }
+
+  return `${text.slice(0, TELEGRAM_MEMO_PREVIEW_LIMIT)}\n...`;
+}
+
+function getTelegramMemoContent(memoData) {
+  const content = typeof memoData?.content === 'string' ? memoData.content.trim() : '';
+  if (content) {
+    return truncateTelegramText(content);
+  }
+
+  if ((memoData?.resourceCount || 0) > 0) {
+    return `📎 此 memo 仅包含 ${memoData.resourceCount} 个附件`;
+  }
+
+  return '（无文本内容）';
+}
+
+export function getTelegramVisibilityLabel(visibility) {
+  return TELEGRAM_VISIBILITY_LABELS[visibility] || visibility || '未知';
+}
+
+export function buildTelegramMemoVisibilityCallbackData(memoId, visibility) {
+  return `memo_visibility:${memoId}:${visibility}`;
+}
+
+export function parseTelegramMemoVisibilityCallbackData(data) {
+  if (typeof data !== 'string') {
+    return null;
+  }
+
+  const matched = data.match(/^memo_visibility:(\d+):(PRIVATE|PROTECTED|PUBLIC)$/);
+  if (!matched) {
+    return null;
+  }
+
+  return {
+    memoId: Number.parseInt(matched[1], 10),
+    visibility: matched[2],
+  };
+}
+
+export function buildTelegramMemoNotificationText(memoData) {
+  return getTelegramMemoContent(memoData);
+}
+
+export function buildTelegramMemoReplyMarkup(memoData, instanceUrl) {
+  const inlineKeyboard = [
+    TELEGRAM_VISIBILITY_OPTIONS.map((visibility) => ({
+      text: memoData.visibility === visibility ? `● ${getTelegramVisibilityLabel(visibility)}` : getTelegramVisibilityLabel(visibility),
+      callback_data: buildTelegramMemoVisibilityCallbackData(memoData.id, visibility),
+    })),
+  ];
+
+  if (instanceUrl) {
+    inlineKeyboard.push([
+      {
+        text: '打开 Memo',
+        url: `${instanceUrl}/m/${memoData.id}`,
+      },
+    ]);
+  }
+
+  return {
+    inline_keyboard: inlineKeyboard,
+  };
+}
+
 /**
  * 发送 Webhook 通知
  * @param {string} webhookUrl - Webhook URL
@@ -61,43 +142,13 @@ export async function sendTelegramNotification(botToken, chatId, memoData, insta
   }
 
   try {
-    // 构建消息内容
-    let message = `🆕 <b>新 Memo</b>\n\n`;
-    message += `👤 <b>作者:</b> ${memoData.creatorName || memoData.creatorUsername}\n`;
-    message += `⏰ <b>时间:</b> ${new Date(memoData.createdTs * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n`;
-    message += `🔒 <b>可见性:</b> ${memoData.visibility === 'PUBLIC' ? '公开' : memoData.visibility === 'PRIVATE' ? '私密' : '受保护'}\n`;
-
-    if (memoData.tags && memoData.tags.length > 0) {
-      message += `🏷️ <b>标签:</b> ${memoData.tags.map(t => `#${t}`).join(' ')}\n`;
-    }
-
-    message += `\n📝 <b>内容:</b>\n`;
-
-    // 截断过长的内容
-    let content = memoData.content || '';
-    if (content.length > 500) {
-      content = content.substring(0, 500) + '...';
-    }
-
-    // 转义 HTML 特殊字符
-    content = content
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-
-    message += content;
-
-    // 添加链接
-    if (instanceUrl) {
-      const memoUrl = `${instanceUrl}/m/${memoData.id}`;
-      message += `\n\n🔗 <a href="${memoUrl}">查看详情</a>`;
-    }
+    const message = buildTelegramMemoNotificationText(memoData);
 
     const result = await callTelegramApi(botToken, 'sendMessage', {
       chat_id: chatId,
       text: message,
-      parse_mode: 'HTML',
-      disable_web_page_preview: false,
+      disable_web_page_preview: true,
+      reply_markup: buildTelegramMemoReplyMarkup(memoData, instanceUrl),
     });
 
     if (!result.ok) {
@@ -110,6 +161,32 @@ export async function sendTelegramNotification(botToken, chatId, memoData, insta
   }
 }
 
+export async function editTelegramMemoNotification(botToken, chatId, messageId, memoData, instanceUrl) {
+  if (!botToken || !chatId || !messageId) {
+    return;
+  }
+
+  return callTelegramApi(botToken, 'editMessageText', {
+    chat_id: chatId,
+    message_id: messageId,
+    text: buildTelegramMemoNotificationText(memoData),
+    disable_web_page_preview: true,
+    reply_markup: buildTelegramMemoReplyMarkup(memoData, instanceUrl),
+  });
+}
+
+export async function answerTelegramCallback(botToken, callbackQueryId, text, showAlert = false) {
+  if (!botToken || !callbackQueryId) {
+    return;
+  }
+
+  return callTelegramApi(botToken, 'answerCallbackQuery', {
+    callback_query_id: callbackQueryId,
+    text,
+    show_alert: showAlert,
+  });
+}
+
 /**
  * 发送所有配置的通知
  * @param {object} db - 数据库连接
@@ -119,14 +196,6 @@ export async function sendAllNotifications(db, memoData, options = {}) {
   console.log('🔔 sendAllNotifications called for memo:', memoData.id);
 
   try {
-    // 只通知公开的 memo
-    if (memoData.visibility !== 'PUBLIC') {
-      console.log('⏭️  Skipping notifications for non-public memo');
-      return;
-    }
-
-    console.log('✅ Memo is PUBLIC, proceeding with notifications');
-
     // 获取创建者的用户设置（获取 telegram_user_id）
     const userSettingStmt = db.prepare(`
       SELECT telegram_user_id
