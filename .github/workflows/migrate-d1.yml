@@ -1,0 +1,41 @@
+name: Run D1 Migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      migration_file:
+        description: "Path to the migration SQL file under backend/"
+        required: true
+        default: "migrations/add-tags-creator-id.sql"
+      database_name:
+        description: "Cloudflare D1 database name from backend/wrangler.toml"
+        required: true
+        default: "memos_db"
+
+jobs:
+  migrate-d1:
+    name: Run Remote D1 Migration
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate migration file
+        shell: bash
+        run: |
+          if [[ ! -f "${{ github.event.inputs.migration_file }}" ]]; then
+            echo "Migration file not found: ${{ github.event.inputs.migration_file }}"
+            exit 1
+          fi
+
+      - name: Run D1 migration
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: backend
+          command: d1 execute ${{ github.event.inputs.database_name }} --remote --file=./${{ github.event.inputs.migration_file }}

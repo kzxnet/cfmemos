@@ -1,6 +1,8 @@
 // JWT 工具函数 - 使用 Web Crypto API 实现
 // 兼容 Cloudflare Workers 环境
 
+let hasWarnedForDefaultJWTSecret = false;
+
 // Base64URL 编码（JWT 标准格式）
 function base64UrlEncode(buffer) {
   const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)))
@@ -156,6 +158,9 @@ export function getJWTSecret(env) {
   }
 
   // 如果没有配置，使用一个默认密钥（生产环境应该配置 JWT_SECRET）
-  console.warn('Warning: Using default JWT secret. Please set JWT_SECRET environment variable in production.');
+  if (!hasWarnedForDefaultJWTSecret) {
+    console.warn('Warning: Using default JWT secret. Set JWT_SECRET in .dev.vars for local development and via `wrangler secret put JWT_SECRET` for deployment.');
+    hasWarnedForDefaultJWTSecret = true;
+  }
   return 'cloudflare-memos-default-jwt-secret-please-change-in-production';
 }

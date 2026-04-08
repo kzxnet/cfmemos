@@ -30,6 +30,16 @@ wrangler d1 execute memos_db --local --file=schema.sql
 
 ### 3. 启动开发服务器
 
+先配置本地 JWT 密钥：
+
+```bash
+cp .dev.vars.example .dev.vars
+```
+
+然后把 `.dev.vars` 里的 `JWT_SECRET` 改成你自己的随机长字符串。
+
+再启动开发服务器：
+
 ```bash
 npm run dev
 ```
@@ -167,6 +177,12 @@ ALLOWED_ORIGINS = "https://your-frontend.pages.dev,https://your-domain.com"
 
 ### 部署到生产环境
 
+先配置生产环境密钥：
+
+```bash
+wrangler secret put JWT_SECRET
+```
+
 ```bash
 # 1. 确保已登录 Cloudflare
 wrangler login
@@ -254,10 +270,29 @@ ALLOWED_ORIGINS = "http://localhost:5173"
 
 确保在 Cloudflare Dashboard 中创建了名为 `memos` 的 R2 存储桶。
 
+### 4. Warning: Using default JWT secret
+
+说明当前没有配置 `JWT_SECRET`，后端退回到了内置默认值。
+
+本地开发：
+
+```bash
+cp .dev.vars.example .dev.vars
+```
+
+然后编辑 `backend/.dev.vars`，设置你自己的 `JWT_SECRET`。
+
+生产环境：
+
+```bash
+wrangler secret put JWT_SECRET
+```
+
 ## 环境变量
 
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
+| `JWT_SECRET` | JWT 签名密钥，必须自行配置 | 无 |
 | `GRAVATAR_CDN` | Gravatar CDN 地址 | `https://gravatar.loli.net` |
 | `ALLOWED_ORIGINS` | 允许的 CORS 来源（逗号分隔） | `""` |
 | `ENVIRONMENT` | 运行环境 | `development` |

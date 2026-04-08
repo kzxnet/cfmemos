@@ -22,7 +22,7 @@ const MemoResource: React.FC<Props> = (props: Props) => {
       ) : (
         <>
           <ResourceIcon className="!w-4 !h-4 mr-1" resource={resource} />
-          <span className="text-sm max-w-[256px] truncate cursor-pointer" onClick={handlePreviewBtnClick}>
+          <span className="text-sm max-w-[256px] truncate cursor-pointer" data-prevent-memo-open onClick={handlePreviewBtnClick}>
             {resource.filename}
           </span>
         </>

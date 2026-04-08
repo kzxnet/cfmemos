@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "react-hot-toast";
 import { useParams } from "react-router-dom";
 import MemoFilter from "@/components/MemoFilter";
+import MemoDetailModal from "@/components/MemoDetailModal";
 import { DEFAULT_MEMO_LIMIT } from "@/helpers/consts";
 import { getTimeStampByDate } from "@/helpers/datetime";
 import useCurrentUser from "@/hooks/useCurrentUser";
@@ -27,6 +28,7 @@ const MemoList: React.FC = () => {
   const username = params.username || extractUsernameFromName(user.name);
 
   const fetchMoreRef = useRef<HTMLSpanElement>(null);
+  const [selectedMemoId, setSelectedMemoId] = useState<MemoId | null>(null);
 
   const shownMemos = memos.filter((memo) => memo.creatorUsername === username && memo.rowStatus === "NORMAL");
 
@@ -109,7 +111,15 @@ const MemoList: React.FC = () => {
     <div className="flex flex-col justify-start items-start w-full max-w-full overflow-y-scroll pb-28 hide-scrollbar">
       <MemoFilter />
       {sortedMemos.map((memo) => (
-        <Memo key={memo.id} memo={memo} lazyRendering showVisibility showPinnedStyle showParent />
+        <Memo
+          key={memo.id}
+          memo={memo}
+          lazyRendering
+          showVisibility
+          showPinnedStyle
+          showParent
+          onOpenDetail={setSelectedMemoId}
+        />
       ))}
 
       {loadingStatus === "fetching" ? (
@@ -134,6 +144,8 @@ const MemoList: React.FC = () => {
           </div>
         </div>
       )}
+
+      {selectedMemoId !== null && <MemoDetailModal memoId={selectedMemoId} onClose={() => setSelectedMemoId(null)} />}
     </div>
   );
 };

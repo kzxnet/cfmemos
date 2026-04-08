@@ -21,6 +21,13 @@ const validateTagName = (tagName: string): boolean => {
   return true;
 };
 
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return "Failed to create tag";
+};
+
 const CreateTagDialog: React.FC<Props> = (props: Props) => {
   const { destroy } = props;
   const t = useTranslate();
@@ -70,9 +77,9 @@ const CreateTagDialog: React.FC<Props> = (props: Props) => {
     try {
       await tagStore.upsertTag(tagName);
       setTagName("");
-    } catch (error: any) {
+    } catch (error) {
       console.error(error);
-      toast.error(error.response.data.message);
+      toast.error(getErrorMessage(error));
     }
   };
 

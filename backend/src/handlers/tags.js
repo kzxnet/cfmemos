@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { requireAuth, jsonResponse, errorResponse } from '../utils/auth';
+import { getTagSchema, upsertTagRecord } from '../utils/tags.js';
 
 const app = new Hono();
 
@@ -40,6 +41,7 @@ app.get('/', async (c) => {
 
   try {
     const db = c.env.DB;
+    const tagSchema = await getTagSchema(db);
 
     // 获取URL参数中的userId（可能是用户名或用户ID）
     const userIdParam = c.req.query('userId');
@@ -71,13 +73,24 @@ app.get('/', async (c) => {
       return jsonResponse([]);
     }
 
+    const selectColumns = [
+      't.id',
+      't.name',
+      tagSchema.hasCreatorId ? 't.creator_id as creatorId' : 'NULL as creatorId',
+      tagSchema.hasCreatedTs ? 't.created_ts as createdTs' : 'NULL as createdTs',
+      'COUNT(DISTINCT mt.memo_id) as memoCount',
+    ];
+    const groupByColumns = ['t.id', 't.name'];
+    if (tagSchema.hasCreatorId) {
+      groupByColumns.push('t.creator_id');
+    }
+    if (tagSchema.hasCreatedTs) {
+      groupByColumns.push('t.created_ts');
+    }
+
     let query = `
       SELECT
-        t.id,
-        t.name,
-        t.creator_id as creatorId,
-        t.created_ts as createdTs,
-        COUNT(DISTINCT mt.memo_id) as memoCount
+        ${selectColumns.join(',\n        ')}
       FROM tags t
       LEFT JOIN memo_tags mt ON t.id = mt.tag_id
       LEFT JOIN memos m ON mt.memo_id = m.id AND m.row_status = 'NORMAL'
@@ -87,15 +100,17 @@ app.get('/', async (c) => {
     const bindValues = [];
 
     // 只返回目标用户创建的标签
-    whereConditions.push('t.creator_id = ?');
-    bindValues.push(targetUserId);
+    if (tagSchema.hasCreatorId) {
+      whereConditions.push('(t.creator_id = ? OR t.creator_id IS NULL)');
+      bindValues.push(targetUserId);
+    }
 
     if (whereConditions.length > 0) {
       query += ' WHERE ' + whereConditions.join(' AND ');
     }
 
     query += `
-      GROUP BY t.id, t.name, t.creator_id, t.created_ts
+      GROUP BY ${groupByColumns.join(', ')}
       ORDER BY memoCount DESC, t.name ASC
     `;
 
@@ -137,26 +152,16 @@ app.post('/', async (c) => {
 
     const tagName = body.name.trim();
 
-    // 检查当前用户是否已有同名标签
-    const checkStmt = db.prepare('SELECT id, name, created_ts as createdTs FROM tags WHERE name = ? AND creator_id = ?');
-    const existingTag = await checkStmt.bind(tagName, currentUser.id).first();
+    const { tag, created, conflict } = await upsertTagRecord(db, tagName, currentUser.id);
 
-    if (existingTag) {
-      // 标签已存在，返回现有标签
-      return jsonResponse(existingTag);
+    if (conflict) {
+      return errorResponse('Tag name already exists', 409);
     }
 
-    // 创建新标签，记录创建者
-    const insertStmt = db.prepare('INSERT INTO tags (name, creator_id) VALUES (?, ?)');
-    const result = await insertStmt.bind(tagName, currentUser.id).run();
-
     return jsonResponse({
-      id: result.meta.last_row_id,
-      name: tagName,
-      creatorId: currentUser.id,
-      createdTs: Math.floor(Date.now() / 1000),
-      message: 'Tag created successfully'
-    }, 201);
+      ...tag,
+      message: created ? 'Tag created successfully' : 'Tag already exists',
+    }, created ? 201 : 200);
   } catch (error) {
     console.error('Error creating tag:', error);
     return errorResponse('Failed to create tag', 500);
@@ -214,6 +219,7 @@ app.post('/delete', async (c) => {
     const db = c.env.DB;
     const body = await c.req.json();
     const currentUser = c.get('user');
+    const tagSchema = await getTagSchema(db);
 
     if (!currentUser) {
       return errorResponse('User information not found', 401);
@@ -223,8 +229,8 @@ app.post('/delete', async (c) => {
       return errorResponse('Tag name is required', 400);
     }
 
-    // 检查标签是否存在且属于当前用户
-    const checkStmt = db.prepare('SELECT id, creator_id FROM tags WHERE name = ?');
+    const selectColumns = tagSchema.hasCreatorId ? 'id, creator_id' : 'id, NULL as creator_id';
+    const checkStmt = db.prepare(`SELECT ${selectColumns} FROM tags WHERE name = ?`);
     const tag = await checkStmt.bind(body.name).first();
 
     if (!tag) {
@@ -232,7 +238,7 @@ app.post('/delete', async (c) => {
     }
 
     // 权限检查：只有创建者才能删除
-    if (tag.creator_id !== currentUser.id) {
+    if (tagSchema.hasCreatorId && tag.creator_id !== null && tag.creator_id !== currentUser.id) {
       return errorResponse('Permission denied: You can only delete tags you created', 403);
     }
 
@@ -265,13 +271,15 @@ app.delete('/:id', async (c) => {
     const db = c.env.DB;
     const tagId = c.req.param('id');
     const currentUser = c.get('user');
+    const tagSchema = await getTagSchema(db);
 
     if (!currentUser) {
       return errorResponse('User information not found', 401);
     }
 
     // 检查标签是否存在且属于当前用户
-    const checkStmt = db.prepare('SELECT id, name, creator_id FROM tags WHERE id = ?');
+    const selectColumns = tagSchema.hasCreatorId ? 'id, name, creator_id' : 'id, name, NULL as creator_id';
+    const checkStmt = db.prepare(`SELECT ${selectColumns} FROM tags WHERE id = ?`);
     const tag = await checkStmt.bind(tagId).first();
 
     if (!tag) {
@@ -279,7 +287,7 @@ app.delete('/:id', async (c) => {
     }
 
     // 权限检查：只有创建者才能删除
-    if (tag.creator_id !== currentUser.id) {
+    if (tagSchema.hasCreatorId && tag.creator_id !== null && tag.creator_id !== currentUser.id) {
       return errorResponse('Permission denied: You can only delete tags you created', 403);
     }
 

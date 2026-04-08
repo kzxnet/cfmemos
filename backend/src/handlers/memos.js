@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { requireAuth, jsonResponse, errorResponse, hashPassword, generateSecurePassword } from '../utils/auth';
 import { simpleMD5 } from '../utils/gravatar';
 import { sendAllNotifications } from '../utils/notifications.js';
+import { attachTagToMemo } from '../utils/tags.js';
 
 const app = new Hono();
 
@@ -534,14 +535,44 @@ app.get('/all', async (c) => {
     const workerUrl = new URL(c.req.url).origin;
 
     // 检查用户是否已登录
-    const token = c.req.header('Authorization')?.replace('Bearer ', '');
+    const token = c.req.header('Authorization')?.replace('Bearer ', '') ||
+                  c.req.header('X-Token') ||
+                  c.req.query('token');
     let currentUser = null;
     if (token) {
       try {
-        const { validateSession } = await import('../utils/auth.js');
-        currentUser = await validateSession(c.env.DB, token);
+        if (token.startsWith('eyJ')) {
+          const { verifyJWT, getJWTSecret } = await import('../utils/jwt.js');
+          const jwtSecret = getJWTSecret(c.env);
+          const payload = await verifyJWT(token, jwtSecret);
+
+          if (payload) {
+            const userStmt = db.prepare(`
+              SELECT id, username, nickname, email, avatar_url, is_admin, role
+              FROM users
+              WHERE id = ?
+            `);
+            const dbUser = await userStmt.bind(payload.id).first();
+
+            if (dbUser) {
+              currentUser = {
+                id: dbUser.id,
+                username: dbUser.username,
+                nickname: dbUser.nickname,
+                email: dbUser.email || '',
+                avatarUrl: dbUser.avatar_url || '',
+                isAdmin: Boolean(dbUser.is_admin) || ['host', 'admin'].includes(dbUser.role),
+                role: dbUser.role || (dbUser.is_admin ? 'admin' : 'user')
+              };
+            }
+          }
+        } else {
+          const { validateSession } = await import('../utils/auth.js');
+          currentUser = await validateSession(c.env.DB, token);
+        }
       } catch (e) {
         // 忽略验证错误，继续作为未登录用户
+        console.error('Token validation error:', e);
       }
     }
 
@@ -713,14 +744,44 @@ app.get('/:id', async (c) => {
     const firstRow = rawResults[0];
 
     // 检查用户是否已登录
-    const token = c.req.header('Authorization')?.replace('Bearer ', '');
+    const token = c.req.header('Authorization')?.replace('Bearer ', '') ||
+                  c.req.header('X-Token') ||
+                  c.req.query('token');
     let currentUser = null;
     if (token) {
       try {
-        const { validateSession } = await import('../utils/auth.js');
-        currentUser = await validateSession(c.env.DB, token);
+        if (token.startsWith('eyJ')) {
+          const { verifyJWT, getJWTSecret } = await import('../utils/jwt.js');
+          const jwtSecret = getJWTSecret(c.env);
+          const payload = await verifyJWT(token, jwtSecret);
+
+          if (payload) {
+            const userStmt = db.prepare(`
+              SELECT id, username, nickname, email, avatar_url, is_admin, role
+              FROM users
+              WHERE id = ?
+            `);
+            const dbUser = await userStmt.bind(payload.id).first();
+
+            if (dbUser) {
+              currentUser = {
+                id: dbUser.id,
+                username: dbUser.username,
+                nickname: dbUser.nickname,
+                email: dbUser.email || '',
+                avatarUrl: dbUser.avatar_url || '',
+                isAdmin: Boolean(dbUser.is_admin) || ['host', 'admin'].includes(dbUser.role),
+                role: dbUser.role || (dbUser.is_admin ? 'admin' : 'user')
+              };
+            }
+          }
+        } else {
+          const { validateSession } = await import('../utils/auth.js');
+          currentUser = await validateSession(c.env.DB, token);
+        }
       } catch (e) {
         // 忽略验证错误，继续作为未登录用户
+        console.error('Token validation error:', e);
       }
     }
 
@@ -883,23 +944,7 @@ app.post('/', async (c) => {
 
     // 保存标签
     for (const tagName of tagNames) {
-      // 检查标签是否存在，不存在则创建
-      let tagStmt = db.prepare('SELECT id FROM tags WHERE name = ?');
-      let tag = await tagStmt.bind(tagName).first();
-
-      let tagId;
-      if (!tag) {
-        // 创建新标签
-        const createTagStmt = db.prepare('INSERT INTO tags (name) VALUES (?)');
-        const tagResult = await createTagStmt.bind(tagName).run();
-        tagId = tagResult.meta.last_row_id;
-      } else {
-        tagId = tag.id;
-      }
-
-      // 关联标签到memo
-      const linkTagStmt = db.prepare('INSERT INTO memo_tags (memo_id, tag_id) VALUES (?, ?)');
-      await linkTagStmt.bind(memoId, tagId).run();
+      await attachTagToMemo(db, memoId, tagName, creatorId);
     }
 
     // 处理资源列表

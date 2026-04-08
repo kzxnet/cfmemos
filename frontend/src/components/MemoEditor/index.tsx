@@ -302,6 +302,7 @@ const MemoEditor = (props: Props) => {
       };
     });
     const content = editorRef.current?.getContent() ?? "";
+    let didSaveMemo = false;
     try {
       if (memoId && memoId !== UNKNOWN_ID) {
         const prevMemo = await memoStore.getMemoById(memoId ?? UNKNOWN_ID);
@@ -323,10 +324,11 @@ const MemoEditor = (props: Props) => {
           relationList: state.relationList,
         });
       }
+      didSaveMemo = true;
       editorRef.current?.setContent("");
     } catch (error: any) {
       console.error(error);
-      toast.error(error.response.data.message);
+      toast.error(error?.response?.data?.message || error?.message || "Failed to save memo");
     }
     setState((state) => {
       return {
@@ -335,11 +337,19 @@ const MemoEditor = (props: Props) => {
       };
     });
 
+    if (!didSaveMemo) {
+      return;
+    }
+
     // Upsert tag with the content.
     const matchedNodes = getMatchedNodes(content);
     const tagNameList = uniq(matchedNodes.filter((node) => node.parserName === "tag").map((node) => node.matchedContent.slice(1)));
     for (const tagName of tagNameList) {
-      await tagStore.upsertTag(tagName);
+      try {
+        await tagStore.upsertTag(tagName);
+      } catch (error) {
+        console.error("Failed to sync memo tag:", error);
+      }
     }
 
     setState((prevState) => ({

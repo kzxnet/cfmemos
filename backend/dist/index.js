@@ -108,11 +108,16 @@ function getJWTSecret(env) {
   if (env.JWT_SECRET) {
     return env.JWT_SECRET;
   }
-  console.warn("Warning: Using default JWT secret. Please set JWT_SECRET environment variable in production.");
+  if (!hasWarnedForDefaultJWTSecret) {
+    console.warn("Warning: Using default JWT secret. Set JWT_SECRET in .dev.vars for local development and via `wrangler secret put JWT_SECRET` for deployment.");
+    hasWarnedForDefaultJWTSecret = true;
+  }
   return "cloudflare-memos-default-jwt-secret-please-change-in-production";
 }
+var hasWarnedForDefaultJWTSecret;
 var init_jwt = __esm({
   "src/utils/jwt.js"() {
+    hasWarnedForDefaultJWTSecret = false;
     __name(base64UrlEncode, "base64UrlEncode");
     __name(base64UrlDecode, "base64UrlDecode");
     __name(stringToUint8Array, "stringToUint8Array");
@@ -2994,6 +2999,143 @@ async function sendAllNotifications(db, memoData, options = {}) {
 }
 __name(sendAllNotifications, "sendAllNotifications");
 
+// src/utils/tags.js
+var cachedTagSchemaPromise = null;
+function buildTagSelectColumns(schema) {
+  return [
+    "id",
+    "name",
+    schema.hasCreatorId ? "creator_id as creatorId" : "NULL as creatorId",
+    schema.hasCreatedTs ? "created_ts as createdTs" : "NULL as createdTs"
+  ].join(", ");
+}
+__name(buildTagSelectColumns, "buildTagSelectColumns");
+async function loadTagSchema(db) {
+  const { results } = await db.prepare("PRAGMA table_info(tags)").all();
+  const columns = new Set((results || []).map((column) => column.name));
+  return {
+    hasCreatorId: columns.has("creator_id"),
+    hasCreatedTs: columns.has("created_ts")
+  };
+}
+__name(loadTagSchema, "loadTagSchema");
+async function getTagById(db, id, schema) {
+  const stmt = db.prepare(`
+    SELECT ${buildTagSelectColumns(schema)}
+    FROM tags
+    WHERE id = ?
+  `);
+  return stmt.bind(id).first();
+}
+__name(getTagById, "getTagById");
+async function getTagSchema(db) {
+  if (!cachedTagSchemaPromise) {
+    cachedTagSchemaPromise = loadTagSchema(db).catch((error) => {
+      cachedTagSchemaPromise = null;
+      throw error;
+    });
+  }
+  return cachedTagSchemaPromise;
+}
+__name(getTagSchema, "getTagSchema");
+async function findTagByName(db, tagName, creatorId = null) {
+  const schema = await getTagSchema(db);
+  const selectColumns = buildTagSelectColumns(schema);
+  if (schema.hasCreatorId && creatorId !== null && creatorId !== void 0) {
+    const exactMatch = await db.prepare(`
+      SELECT ${selectColumns}
+      FROM tags
+      WHERE name = ? AND creator_id = ?
+      LIMIT 1
+    `).bind(tagName, creatorId).first();
+    if (exactMatch) {
+      return { schema, tag: exactMatch, matchType: "owned" };
+    }
+    const legacyTag = await db.prepare(`
+      SELECT ${selectColumns}
+      FROM tags
+      WHERE name = ? AND creator_id IS NULL
+      LIMIT 1
+    `).bind(tagName).first();
+    if (legacyTag) {
+      return { schema, tag: legacyTag, matchType: "legacy" };
+    }
+    const globalTag = await db.prepare(`
+      SELECT ${selectColumns}
+      FROM tags
+      WHERE name = ?
+      LIMIT 1
+    `).bind(tagName).first();
+    if (globalTag) {
+      return { schema, tag: globalTag, matchType: "global" };
+    }
+  } else {
+    const tag = await db.prepare(`
+      SELECT ${selectColumns}
+      FROM tags
+      WHERE name = ?
+      LIMIT 1
+    `).bind(tagName).first();
+    if (tag) {
+      return { schema, tag, matchType: "global" };
+    }
+  }
+  return { schema, tag: null, matchType: null };
+}
+__name(findTagByName, "findTagByName");
+async function upsertTagRecord(db, rawTagName, creatorId = null) {
+  const tagName = rawTagName?.trim();
+  const lookup = await findTagByName(db, tagName, creatorId);
+  const { schema } = lookup;
+  if (lookup.tag) {
+    if (lookup.matchType === "legacy" && schema.hasCreatorId && creatorId !== null && creatorId !== void 0) {
+      await db.prepare(`
+        UPDATE tags
+        SET creator_id = ?
+        WHERE id = ? AND creator_id IS NULL
+      `).bind(creatorId, lookup.tag.id).run();
+      const adoptedTag = await getTagById(db, lookup.tag.id, schema);
+      return { tag: adoptedTag, created: false, adopted: true, schema };
+    }
+    return {
+      tag: lookup.tag,
+      created: false,
+      adopted: false,
+      schema,
+      conflict: lookup.matchType === "global" && schema.hasCreatorId && lookup.tag.creatorId !== null && lookup.tag.creatorId !== creatorId
+    };
+  }
+  const insertStmt = schema.hasCreatorId && creatorId !== null && creatorId !== void 0 ? db.prepare("INSERT INTO tags (name, creator_id) VALUES (?, ?)") : db.prepare("INSERT INTO tags (name) VALUES (?)");
+  const bindValues = schema.hasCreatorId && creatorId !== null && creatorId !== void 0 ? [tagName, creatorId] : [tagName];
+  try {
+    const result = await insertStmt.bind(...bindValues).run();
+    const createdTag = await getTagById(db, result.meta.last_row_id, schema);
+    return { tag: createdTag, created: true, adopted: false, schema, conflict: false };
+  } catch (error) {
+    const conflictLookup = await findTagByName(db, tagName, creatorId);
+    if (conflictLookup.tag) {
+      return {
+        tag: conflictLookup.tag,
+        created: false,
+        adopted: false,
+        schema,
+        conflict: conflictLookup.matchType === "global" && schema.hasCreatorId && conflictLookup.tag.creatorId !== null && conflictLookup.tag.creatorId !== creatorId
+      };
+    }
+    throw error;
+  }
+}
+__name(upsertTagRecord, "upsertTagRecord");
+async function attachTagToMemo(db, memoId, rawTagName, creatorId = null) {
+  const { tag, conflict } = await upsertTagRecord(db, rawTagName, creatorId);
+  await db.prepare(`
+    INSERT OR IGNORE INTO memo_tags (memo_id, tag_id)
+    VALUES (?, ?)
+  `).bind(memoId, tag.id).run();
+  return { tag, conflict };
+}
+__name(attachTagToMemo, "attachTagToMemo");
+
 // src/handlers/memos.js
 var app2 = new Hono2();
 app2.get("/", async (c) => {
@@ -3389,13 +3531,39 @@ app2.get("/all", async (c) => {
     const offset = parseInt(c.req.query("offset")) || 0;
     const creatorUsername = c.req.query("creatorUsername");
     const workerUrl = new URL(c.req.url).origin;
-    const token = c.req.header("Authorization")?.replace("Bearer ", "");
+    const token = c.req.header("Authorization")?.replace("Bearer ", "") || c.req.header("X-Token") || c.req.query("token");
     let currentUser = null;
     if (token) {
       try {
-        const { validateSession: validateSession2 } = await Promise.resolve().then(() => (init_auth(), auth_exports));
-        currentUser = await validateSession2(c.env.DB, token);
+        if (token.startsWith("eyJ")) {
+          const { verifyJWT: verifyJWT2, getJWTSecret: getJWTSecret2 } = await Promise.resolve().then(() => (init_jwt(), jwt_exports));
+          const jwtSecret = getJWTSecret2(c.env);
+          const payload = await verifyJWT2(token, jwtSecret);
+          if (payload) {
+            const userStmt = db.prepare(`
+              SELECT id, username, nickname, email, avatar_url, is_admin, role
+              FROM users
+              WHERE id = ?
+            `);
+            const dbUser = await userStmt.bind(payload.id).first();
+            if (dbUser) {
+              currentUser = {
+                id: dbUser.id,
+                username: dbUser.username,
+                nickname: dbUser.nickname,
+                email: dbUser.email || "",
+                avatarUrl: dbUser.avatar_url || "",
+                isAdmin: Boolean(dbUser.is_admin) || ["host", "admin"].includes(dbUser.role),
+                role: dbUser.role || (dbUser.is_admin ? "admin" : "user")
+              };
+            }
+          }
+        } else {
+          const { validateSession: validateSession2 } = await Promise.resolve().then(() => (init_auth(), auth_exports));
+          currentUser = await validateSession2(c.env.DB, token);
+        }
       } catch (e) {
+        console.error("Token validation error:", e);
       }
     }
     const disablePublicMemosStmt = db.prepare("SELECT value FROM settings WHERE key = 'disable-public-memos'");
@@ -3532,13 +3700,39 @@ app2.get("/:id", async (c) => {
       return errorResponse("Memo not found", 404);
     }
     const firstRow = rawResults[0];
-    const token = c.req.header("Authorization")?.replace("Bearer ", "");
+    const token = c.req.header("Authorization")?.replace("Bearer ", "") || c.req.header("X-Token") || c.req.query("token");
     let currentUser = null;
     if (token) {
       try {
-        const { validateSession: validateSession2 } = await Promise.resolve().then(() => (init_auth(), auth_exports));
-        currentUser = await validateSession2(c.env.DB, token);
+        if (token.startsWith("eyJ")) {
+          const { verifyJWT: verifyJWT2, getJWTSecret: getJWTSecret2 } = await Promise.resolve().then(() => (init_jwt(), jwt_exports));
+          const jwtSecret = getJWTSecret2(c.env);
+          const payload = await verifyJWT2(token, jwtSecret);
+          if (payload) {
+            const userStmt = db.prepare(`
+              SELECT id, username, nickname, email, avatar_url, is_admin, role
+              FROM users
+              WHERE id = ?
+            `);
+            const dbUser = await userStmt.bind(payload.id).first();
+            if (dbUser) {
+              currentUser = {
+                id: dbUser.id,
+                username: dbUser.username,
+                nickname: dbUser.nickname,
+                email: dbUser.email || "",
+                avatarUrl: dbUser.avatar_url || "",
+                isAdmin: Boolean(dbUser.is_admin) || ["host", "admin"].includes(dbUser.role),
+                role: dbUser.role || (dbUser.is_admin ? "admin" : "user")
+              };
+            }
+          }
+        } else {
+          const { validateSession: validateSession2 } = await Promise.resolve().then(() => (init_auth(), auth_exports));
+          currentUser = await validateSession2(c.env.DB, token);
+        }
       } catch (e) {
+        console.error("Token validation error:", e);
       }
     }
     const disablePublicMemosStmt = db.prepare("SELECT value FROM settings WHERE key = 'disable-public-memos'");
@@ -3663,18 +3857,7 @@ app2.post("/", async (c) => {
     ).run();
     const memoId = result.meta.last_row_id;
     for (const tagName of tagNames) {
-      let tagStmt = db.prepare("SELECT id FROM tags WHERE name = ?");
-      let tag = await tagStmt.bind(tagName).first();
-      let tagId;
-      if (!tag) {
-        const createTagStmt = db.prepare("INSERT INTO tags (name) VALUES (?)");
-        const tagResult = await createTagStmt.bind(tagName).run();
-        tagId = tagResult.meta.last_row_id;
-      } else {
-        tagId = tag.id;
-      }
-      const linkTagStmt = db.prepare("INSERT INTO memo_tags (memo_id, tag_id) VALUES (?, ?)");
-      await linkTagStmt.bind(memoId, tagId).run();
+      await attachTagToMemo(db, memoId, tagName, creatorId);
     }
     if (body.resourceIdList && Array.isArray(body.resourceIdList)) {
       for (const resourceId of body.resourceIdList) {
@@ -4272,6 +4455,7 @@ app4.get("/", async (c) => {
   }
   try {
     const db = c.env.DB;
+    const tagSchema = await getTagSchema(db);
     const userIdParam = c.req.query("userId");
     let targetUserId = null;
     if (userIdParam) {
@@ -4291,26 +4475,38 @@ app4.get("/", async (c) => {
     if (!targetUserId) {
       return jsonResponse([]);
     }
+    const selectColumns = [
+      "t.id",
+      "t.name",
+      tagSchema.hasCreatorId ? "t.creator_id as creatorId" : "NULL as creatorId",
+      tagSchema.hasCreatedTs ? "t.created_ts as createdTs" : "NULL as createdTs",
+      "COUNT(DISTINCT mt.memo_id) as memoCount"
+    ];
+    const groupByColumns = ["t.id", "t.name"];
+    if (tagSchema.hasCreatorId) {
+      groupByColumns.push("t.creator_id");
+    }
+    if (tagSchema.hasCreatedTs) {
+      groupByColumns.push("t.created_ts");
+    }
     let query = `
       SELECT
-        t.id,
-        t.name,
-        t.creator_id as creatorId,
-        t.created_ts as createdTs,
-        COUNT(DISTINCT mt.memo_id) as memoCount
+        ${selectColumns.join(",\n        ")}
       FROM tags t
       LEFT JOIN memo_tags mt ON t.id = mt.tag_id
       LEFT JOIN memos m ON mt.memo_id = m.id AND m.row_status = 'NORMAL'
     `;
     const whereConditions = [];
     const bindValues = [];
-    whereConditions.push("t.creator_id = ?");
-    bindValues.push(targetUserId);
+    if (tagSchema.hasCreatorId) {
+      whereConditions.push("(t.creator_id = ? OR t.creator_id IS NULL)");
+      bindValues.push(targetUserId);
+    }
     if (whereConditions.length > 0) {
       query += " WHERE " + whereConditions.join(" AND ");
     }
     query += `
-      GROUP BY t.id, t.name, t.creator_id, t.created_ts
+      GROUP BY ${groupByColumns.join(", ")}
       ORDER BY memoCount DESC, t.name ASC
     `;
     const stmt = db.prepare(query);
@@ -4336,20 +4532,14 @@ app4.post("/", async (c) => {
       return errorResponse("Tag name is required", 400);
     }
     const tagName = body.name.trim();
-    const checkStmt = db.prepare("SELECT id, name, created_ts as createdTs FROM tags WHERE name = ? AND creator_id = ?");
-    const existingTag = await checkStmt.bind(tagName, currentUser.id).first();
-    if (existingTag) {
-      return jsonResponse(existingTag);
+    const { tag, created, conflict } = await upsertTagRecord(db, tagName, currentUser.id);
+    if (conflict) {
+      return errorResponse("Tag name already exists", 409);
     }
-    const insertStmt = db.prepare("INSERT INTO tags (name, creator_id) VALUES (?, ?)");
-    const result = await insertStmt.bind(tagName, currentUser.id).run();
     return jsonResponse({
-      id: result.meta.last_row_id,
-      name: tagName,
-      creatorId: currentUser.id,
-      createdTs: Math.floor(Date.now() / 1e3),
-      message: "Tag created successfully"
-    }, 201);
+      ...tag,
+      message: created ? "Tag created successfully" : "Tag already exists"
+    }, created ? 201 : 200);
   } catch (error) {
     console.error("Error creating tag:", error);
     return errorResponse("Failed to create tag", 500);
@@ -4387,18 +4577,20 @@ app4.post("/delete", async (c) => {
     const db = c.env.DB;
     const body = await c.req.json();
     const currentUser = c.get("user");
+    const tagSchema = await getTagSchema(db);
     if (!currentUser) {
       return errorResponse("User information not found", 401);
     }
     if (!body.name) {
       return errorResponse("Tag name is required", 400);
     }
-    const checkStmt = db.prepare("SELECT id, creator_id FROM tags WHERE name = ?");
+    const selectColumns = tagSchema.hasCreatorId ? "id, creator_id" : "id, NULL as creator_id";
+    const checkStmt = db.prepare(`SELECT ${selectColumns} FROM tags WHERE name = ?`);
     const tag = await checkStmt.bind(body.name).first();
     if (!tag) {
       return errorResponse("Tag not found", 404);
     }
-    if (tag.creator_id !== currentUser.id) {
+    if (tagSchema.hasCreatorId && tag.creator_id !== null && tag.creator_id !== currentUser.id) {
       return errorResponse("Permission denied: You can only delete tags you created", 403);
     }
     const deleteStmt = db.prepare("DELETE FROM tags WHERE id = ?");
@@ -4423,15 +4615,17 @@ app4.delete("/:id", async (c) => {
     const db = c.env.DB;
     const tagId = c.req.param("id");
     const currentUser = c.get("user");
+    const tagSchema = await getTagSchema(db);
     if (!currentUser) {
       return errorResponse("User information not found", 401);
     }
-    const checkStmt = db.prepare("SELECT id, name, creator_id FROM tags WHERE id = ?");
+    const selectColumns = tagSchema.hasCreatorId ? "id, name, creator_id" : "id, name, NULL as creator_id";
+    const checkStmt = db.prepare(`SELECT ${selectColumns} FROM tags WHERE id = ?`);
     const tag = await checkStmt.bind(tagId).first();
     if (!tag) {
       return errorResponse("Tag not found", 404);
     }
-    if (tag.creator_id !== currentUser.id) {
+    if (tagSchema.hasCreatorId && tag.creator_id !== null && tag.creator_id !== currentUser.id) {
       return errorResponse("Permission denied: You can only delete tags you created", 403);
     }
     const deleteStmt = db.prepare("DELETE FROM tags WHERE id = ?");
@@ -6079,15 +6273,9 @@ async function findUserByTelegramId(db, candidateIds) {
   return stmt.bind(...uniqueCandidateIds).first();
 }
 __name(findUserByTelegramId, "findUserByTelegramId");
-async function ensureMemoTags(db, memoId, tagNames) {
+async function ensureMemoTags(db, memoId, tagNames, creatorId) {
   for (const tagName of tagNames) {
-    const existingTag = await db.prepare("SELECT id FROM tags WHERE name = ?").bind(tagName).first();
-    let tagId = existingTag?.id;
-    if (!tagId) {
-      const insertResult = await db.prepare("INSERT INTO tags (name) VALUES (?)").bind(tagName).run();
-      tagId = insertResult.meta.last_row_id;
-    }
-    await db.prepare("INSERT INTO memo_tags (memo_id, tag_id) VALUES (?, ?)").bind(memoId, tagId).run();
+    await attachTagToMemo(db, memoId, tagName, creatorId);
   }
 }
 __name(ensureMemoTags, "ensureMemoTags");
@@ -6100,7 +6288,7 @@ async function createTelegramMemo(db, user, content) {
   `).bind(user.id, content, visibility, now).run();
   const memoId = insertResult.meta.last_row_id;
   const tagNames = extractTagNames(content);
-  await ensureMemoTags(db, memoId, tagNames);
+  await ensureMemoTags(db, memoId, tagNames, user.id);
   return {
     memoId,
     createdTs: now,

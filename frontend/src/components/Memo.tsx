@@ -32,6 +32,7 @@ interface Props {
   showVisibility?: boolean;
   showPinnedStyle?: boolean;
   lazyRendering?: boolean;
+  onOpenDetail?: (memoId: MemoId) => void;
 }
 
 const Memo: React.FC<Props> = (props: Props) => {
@@ -47,9 +48,31 @@ const Memo: React.FC<Props> = (props: Props) => {
   const [shouldRender, setShouldRender] = useState<boolean>(lazyRendering ? false : true);
   const [displayTime, setDisplayTime] = useState<string>(getRelativeTimeString(memo.displayTs));
   const memoContainerRef = useRef<HTMLDivElement>(null);
+  const openDetailTimerRef = useRef<number>();
   const readonly = memo.creatorUsername !== extractUsernameFromName(user?.name);
   const [creator, setCreator] = useState(userV1Store.getUserByUsername(memo.creatorUsername));
   const referenceRelations = memo.relationList.filter((relation) => relation.type === "REFERENCE");
+
+  const clearOpenDetailTimer = () => {
+    if (openDetailTimerRef.current) {
+      window.clearTimeout(openDetailTimerRef.current);
+      openDetailTimerRef.current = undefined;
+    }
+  };
+
+  const openMemoDetail = (altKey = false) => {
+    if (altKey) {
+      showChangeMemoCreatedTsDialog(memo.id);
+      return;
+    }
+
+    if (props.onOpenDetail) {
+      props.onOpenDetail(memo.id);
+      return;
+    }
+
+    navigateTo(`/m/${memo.id}`);
+  };
 
   // Prepare memo creator.
   useEffect(() => {
@@ -62,6 +85,12 @@ const Memo: React.FC<Props> = (props: Props) => {
 
     fn();
   }, [memo.creatorUsername]);
+
+  useEffect(() => {
+    return () => {
+      clearOpenDetailTimer();
+    };
+  }, []);
 
   // Update display time string.
   useEffect(() => {
@@ -99,11 +128,8 @@ const Memo: React.FC<Props> = (props: Props) => {
   }
 
   const handleGotoMemoDetailPage = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (event.altKey) {
-      showChangeMemoCreatedTsDialog(memo.id);
-    } else {
-      navigateTo(`/m/${memo.id}`);
-    }
+    event.stopPropagation();
+    openMemoDetail(event.altKey);
   };
 
   const handleTogglePinMemoBtnClick = async () => {
@@ -214,6 +240,8 @@ const Memo: React.FC<Props> = (props: Props) => {
   };
 
   const handleMemoContentDoubleClick = (e: React.MouseEvent) => {
+    clearOpenDetailTimer();
+
     if (readonly) {
       return;
     }
@@ -228,10 +256,40 @@ const Memo: React.FC<Props> = (props: Props) => {
     handleEditMemoClick();
   };
 
+  const handleMemoWrapperClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!props.onOpenDetail) {
+      return;
+    }
+
+    if (event.detail > 1) {
+      return;
+    }
+
+    const targetEl = event.target as HTMLElement;
+    const isInteractiveTarget = targetEl.closest(
+      "a, button, input, textarea, select, summary, audio, video, [role='button'], [data-prevent-memo-open], .tag-span, .todo-block, .btn"
+    );
+    if (isInteractiveTarget || window.getSelection()?.toString()) {
+      return;
+    }
+
+    clearOpenDetailTimer();
+    openDetailTimerRef.current = window.setTimeout(() => {
+      openMemoDetail(event.altKey);
+      openDetailTimerRef.current = undefined;
+    }, 180);
+  };
+
+  const handleMemoWrapperDoubleClick = () => {
+    clearOpenDetailTimer();
+  };
+
   return (
     <div
       className={`group memo-wrapper ${"memos-" + memo.id} ${memo.pinned && props.showPinnedStyle ? "pinned" : ""}`}
       ref={memoContainerRef}
+      onClick={handleMemoWrapperClick}
+      onDoubleClick={handleMemoWrapperDoubleClick}
     >
       <div className="memo-top-wrapper">
         <div className="w-full max-w-[calc(100%-20px)] flex flex-row justify-start items-center mr-1">
@@ -250,7 +308,7 @@ const Memo: React.FC<Props> = (props: Props) => {
               <Icon.Dot className="w-4 h-auto text-gray-400 dark:text-zinc-400" />
             </>
           )}
-          <span className="text-sm text-gray-400 select-none" onClick={handleGotoMemoDetailPage}>
+          <span className="text-sm text-gray-400 select-none" data-prevent-memo-open onClick={handleGotoMemoDetailPage}>
             {displayTime}
           </span>
           {props.showPinnedStyle && memo.pinned && (

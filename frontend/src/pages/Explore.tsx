@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "react-hot-toast";
 import Empty from "@/components/Empty";
 import Memo from "@/components/Memo";
+import MemoDetailModal from "@/components/MemoDetailModal";
 import MemoFilter from "@/components/MemoFilter";
 import MobileHeader from "@/components/MobileHeader";
 import { DEFAULT_MEMO_LIMIT } from "@/helpers/consts";
@@ -18,6 +19,7 @@ const Explore = () => {
   const { tag: tagQuery, text: textQuery } = filter;
   const showMemoFilter = Boolean(tagQuery || textQuery);
   const fetchMoreRef = useRef<HTMLSpanElement>(null);
+  const [selectedMemoId, setSelectedMemoId] = useState<MemoId | null>(null);
 
   const fetchedMemos = showMemoFilter
     ? memos.filter((memo) => {
@@ -83,7 +85,7 @@ const Explore = () => {
       <div className="relative w-full h-auto flex flex-col justify-start items-start">
         <MemoFilter />
         {sortedMemos.map((memo) => (
-          <Memo key={memo.id} memo={memo} lazyRendering showCreator showParent />
+          <Memo key={memo.id} memo={memo} lazyRendering showCreator showParent onOpenDetail={setSelectedMemoId} />
         ))}
 
         {loadingStatus === "fetching" ? (
@@ -109,6 +111,8 @@ const Explore = () => {
           </div>
         )}
       </div>
+
+      {selectedMemoId !== null && <MemoDetailModal memoId={selectedMemoId} onClose={() => setSelectedMemoId(null)} />}
     </section>
   );
 };

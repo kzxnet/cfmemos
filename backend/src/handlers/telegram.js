@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { jsonResponse, errorResponse, requireAdmin } from '../utils/auth.js';
 import { sendAllNotifications } from '../utils/notifications.js';
 import { callTelegramApi, sendTelegramText } from '../utils/telegram.js';
+import { attachTagToMemo } from '../utils/tags.js';
 
 const app = new Hono();
 
@@ -66,17 +67,9 @@ async function findUserByTelegramId(db, candidateIds) {
   return stmt.bind(...uniqueCandidateIds).first();
 }
 
-async function ensureMemoTags(db, memoId, tagNames) {
+async function ensureMemoTags(db, memoId, tagNames, creatorId) {
   for (const tagName of tagNames) {
-    const existingTag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first();
-
-    let tagId = existingTag?.id;
-    if (!tagId) {
-      const insertResult = await db.prepare('INSERT INTO tags (name) VALUES (?)').bind(tagName).run();
-      tagId = insertResult.meta.last_row_id;
-    }
-
-    await db.prepare('INSERT INTO memo_tags (memo_id, tag_id) VALUES (?, ?)').bind(memoId, tagId).run();
+    await attachTagToMemo(db, memoId, tagName, creatorId);
   }
 }
 
@@ -90,7 +83,7 @@ async function createTelegramMemo(db, user, content) {
 
   const memoId = insertResult.meta.last_row_id;
   const tagNames = extractTagNames(content);
-  await ensureMemoTags(db, memoId, tagNames);
+  await ensureMemoTags(db, memoId, tagNames, user.id);
 
   return {
     memoId,
