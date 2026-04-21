@@ -1,6 +1,6 @@
 import { matcher } from "../matcher";
 
-export const TAG_REG = /#([^\s#,]+)/;
+export const TAG_REG = /(^|[\s(\[{"'“‘（【《「『<,.;:!?，。！？；：、])#([^\s#,]+)/;
 
 const renderer = (rawStr: string) => {
   const matchResult = matcher(rawStr, TAG_REG);
@@ -8,7 +8,12 @@ const renderer = (rawStr: string) => {
     return rawStr;
   }
 
-  return <span className="tag-span">#{matchResult[1]}</span>;
+  return (
+    <>
+      {matchResult[1]}
+      <span className="tag-span">#{matchResult[2]}</span>
+    </>
+  );
 };
 
 export default {

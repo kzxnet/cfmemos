@@ -64,7 +64,7 @@ const SignUp = () => {
       }
     } catch (error: any) {
       console.error(error);
-      toast.error(error.response.data.message || error.message || t("message.signup-failed"));
+      toast.error(error?.response?.data?.message || error?.response?.data?.error || error?.message || t("message.signup-failed"));
     }
     actionBtnLoadingState.setFinish();
   };
@@ -114,7 +114,6 @@ const SignUp = () => {
                 type="submit"
                 disabled={actionBtnLoadingState.isLoading}
                 loading={actionBtnLoadingState.isLoading}
-                onClick={handleSignUpButtonClick}
               >
                 {t("common.sign-up")}
               </Button>

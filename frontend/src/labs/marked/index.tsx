@@ -1,5 +1,5 @@
 import { matcher } from "./matcher";
-import { blockElementParserList, inlineElementParserList } from "./parser";
+import { blockElementParserList, inlineElementParserList, TAG_REG } from "./parser";
 
 type Parser = {
   name: string;
@@ -150,7 +150,10 @@ export const getMatchedTagNames = (markdownStr: string): string[] => {
 
   for (const node of getMatchedNodes(markdownStr)) {
     if (node.parserName === "tag") {
-      tagNameSet.add(node.matchedContent.slice(1));
+      const matchResult = matcher(node.matchedContent, TAG_REG);
+      if (matchResult) {
+        tagNameSet.add(matchResult[2]);
+      }
     }
   }
 

@@ -3,7 +3,7 @@ const CODE_BLOCK_REG = /```[\s\S]*?```/g;
 const INLINE_CODE_REG = /`[^`\n]*`/g;
 const MARKDOWN_LINK_REG = /!?\[[^\]]*\]\([^)]+\)/g;
 const PLAIN_LINK_REG = /(?:https?|chrome|edge):\/\/\S+/g;
-const TAG_NAME_REG = /#([^\s#,]+)/g;
+const TAG_NAME_REG = /(^|[\s(\[{"'“‘（【《「『<,.;:!?，。！？；：、])#([^\s#,]+)/g;
 
 function buildTagSelectColumns(schema) {
   return [
@@ -59,7 +59,7 @@ export function extractTagNamesFromMemoContent(content) {
 
   const sanitizedContent = stripIgnoredTagSegments(content);
   const tagMatches = [...sanitizedContent.matchAll(TAG_NAME_REG)];
-  return [...new Set(tagMatches.map((match) => match[1]))];
+  return [...new Set(tagMatches.map((match) => match[2]))];
 }
 
 export async function findTagByName(db, tagName, creatorId = null) {

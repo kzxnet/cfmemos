@@ -1,6 +1,7 @@
 import { lazy } from "react";
 import { createBrowserRouter } from "react-router-dom";
 import App from "@/App";
+import Loading from "@/pages/Loading";
 import { initialGlobalState } from "@/store/module";
 import AuthStatusProvider from "./AuthStatusProvider";
 
@@ -34,6 +35,7 @@ const router = createBrowserRouter([
     path: "/",
     element: <App />,
     loader: () => initialGlobalStateLoader(),
+    hydrateFallbackElement: <Loading />,
     children: [
       {
         path: "/auth",

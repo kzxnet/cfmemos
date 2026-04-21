@@ -1141,6 +1141,18 @@ app.patch('/:id', async (c) => {
       return errorResponse('Failed to update memo', 500);
     }
 
+    if (body.content !== undefined) {
+      await db.prepare(`
+        DELETE FROM memo_tags
+        WHERE memo_id = ?
+      `).bind(id).run();
+
+      const tagNames = extractTagNamesFromMemoContent(body.content);
+      for (const tagName of tagNames) {
+        await attachTagToMemo(db, id, tagName, memo.creator_id);
+      }
+    }
+
     // 处理附件：删除指定的附件
     if (body.deleteResourceIds && Array.isArray(body.deleteResourceIds)) {
       for (const resourceId of body.deleteResourceIds) {
@@ -1310,6 +1322,16 @@ app.put('/:id', async (c) => {
 
     if (result.changes === 0) {
       return errorResponse('Failed to update memo', 500);
+    }
+
+    await db.prepare(`
+      DELETE FROM memo_tags
+      WHERE memo_id = ?
+    `).bind(id).run();
+
+    const tagNames = extractTagNamesFromMemoContent(body.content);
+    for (const tagName of tagNames) {
+      await attachTagToMemo(db, id, tagName, memo.creator_id);
     }
 
     // 处理附件：删除指定的附件
