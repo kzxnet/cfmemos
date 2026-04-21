@@ -6,7 +6,7 @@ import MemoDetailModal from "@/components/MemoDetailModal";
 import MemoFilter from "@/components/MemoFilter";
 import MobileHeader from "@/components/MobileHeader";
 import { DEFAULT_MEMO_LIMIT } from "@/helpers/consts";
-import { TAG_REG } from "@/labs/marked/parser";
+import { getMatchedTagNames } from "@/labs/marked";
 import { useFilterStore, useMemoStore } from "@/store/module";
 import { useTranslate } from "@/utils/i18n";
 
@@ -27,8 +27,7 @@ const Explore = () => {
 
         if (tagQuery) {
           const tagsSet = new Set<string>();
-          for (const t of Array.from(memo.content.match(new RegExp(TAG_REG, "g")) ?? [])) {
-            const tag = t.replace(TAG_REG, "$1").trim();
+          for (const tag of getMatchedTagNames(memo.content)) {
             const items = tag.split("/");
             let temp = "";
             for (const i of items) {

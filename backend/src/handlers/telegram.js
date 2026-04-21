@@ -9,20 +9,10 @@ import {
   sendTelegramNotification,
 } from '../utils/notifications.js';
 import { callTelegramApi, sendTelegramText } from '../utils/telegram.js';
-import { attachTagToMemo } from '../utils/tags.js';
+import { attachTagToMemo, extractTagNamesFromMemoContent } from '../utils/tags.js';
 
 const app = new Hono();
 const VALID_VISIBILITIES = ['PRIVATE', 'PROTECTED', 'PUBLIC'];
-
-function extractTagNames(content) {
-  if (!content) {
-    return [];
-  }
-
-  const tagRegex = /#([^\s#]+)/g;
-  const tagMatches = [...content.matchAll(tagRegex)];
-  return [...new Set(tagMatches.map((match) => match[1]))];
-}
 
 function buildSettingsMap(settings) {
   const settingsMap = {};
@@ -90,7 +80,7 @@ async function createTelegramMemo(db, user, content) {
   `).bind(user.id, content, visibility, now).run();
 
   const memoId = insertResult.meta.last_row_id;
-  const tagNames = extractTagNames(content);
+  const tagNames = extractTagNamesFromMemoContent(content);
   await ensureMemoTags(db, memoId, tagNames, user.id);
 
   return {

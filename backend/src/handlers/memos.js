@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { requireAuth, jsonResponse, errorResponse, hashPassword, generateSecurePassword } from '../utils/auth';
 import { simpleMD5 } from '../utils/gravatar';
 import { sendAllNotifications } from '../utils/notifications.js';
-import { attachTagToMemo } from '../utils/tags.js';
+import { attachTagToMemo, extractTagNamesFromMemoContent } from '../utils/tags.js';
 
 const app = new Hono();
 
@@ -919,13 +919,7 @@ app.post('/', async (c) => {
     }
 
     // 提取并保存标签（但保留在内容中）
-    const tagNames = [];
-
-    if (body.content) {
-      const tagRegex = /#([^\s#]+)/g;
-      const tagMatches = [...body.content.matchAll(tagRegex)];
-      tagNames.push(...new Set(tagMatches.map(match => match[1]))); // 去重
-    }
+    const tagNames = extractTagNamesFromMemoContent(body.content);
 
     const stmt = db.prepare(`
       INSERT INTO memos (creator_id, content, visibility, display_ts)

@@ -3065,6 +3065,11 @@ __name(sendAllNotifications, "sendAllNotifications");
 
 // src/utils/tags.js
 var cachedTagSchemaPromise = null;
+var CODE_BLOCK_REG = /```[\s\S]*?```/g;
+var INLINE_CODE_REG = /`[^`\n]*`/g;
+var MARKDOWN_LINK_REG = /!?\[[^\]]*\]\([^)]+\)/g;
+var PLAIN_LINK_REG = /(?:https?|chrome|edge):\/\/\S+/g;
+var TAG_NAME_REG = /#([^\s#,]+)/g;
 function buildTagSelectColumns(schema) {
   return [
     "id",
@@ -3102,6 +3107,19 @@ async function getTagSchema(db) {
   return cachedTagSchemaPromise;
 }
 __name(getTagSchema, "getTagSchema");
+function stripIgnoredTagSegments(content = "") {
+  return content.replace(CODE_BLOCK_REG, " ").replace(INLINE_CODE_REG, " ").replace(MARKDOWN_LINK_REG, " ").replace(PLAIN_LINK_REG, " ");
+}
+__name(stripIgnoredTagSegments, "stripIgnoredTagSegments");
+function extractTagNamesFromMemoContent(content) {
+  if (!content) {
+    return [];
+  }
+  const sanitizedContent = stripIgnoredTagSegments(content);
+  const tagMatches = [...sanitizedContent.matchAll(TAG_NAME_REG)];
+  return [...new Set(tagMatches.map((match2) => match2[1]))];
+}
+__name(extractTagNamesFromMemoContent, "extractTagNamesFromMemoContent");
 async function findTagByName(db, tagName, creatorId = null) {
   const schema = await getTagSchema(db);
   const selectColumns = buildTagSelectColumns(schema);
@@ -3901,12 +3919,7 @@ app2.post("/", async (c) => {
         creatorId = 1;
       }
     }
-    const tagNames = [];
-    if (body.content) {
-      const tagRegex = /#([^\s#]+)/g;
-      const tagMatches = [...body.content.matchAll(tagRegex)];
-      tagNames.push(...new Set(tagMatches.map((match2) => match2[1])));
-    }
+    const tagNames = extractTagNamesFromMemoContent(body.content);
     const stmt = db.prepare(`
       INSERT INTO memos (creator_id, content, visibility, display_ts)
       VALUES (?, ?, ?, ?)
@@ -6285,15 +6298,6 @@ var identityProviders_default = app12;
 init_auth();
 var app13 = new Hono2();
 var VALID_VISIBILITIES = ["PRIVATE", "PROTECTED", "PUBLIC"];
-function extractTagNames(content) {
-  if (!content) {
-    return [];
-  }
-  const tagRegex = /#([^\s#]+)/g;
-  const tagMatches = [...content.matchAll(tagRegex)];
-  return [...new Set(tagMatches.map((match2) => match2[1]))];
-}
-__name(extractTagNames, "extractTagNames");
 function buildSettingsMap(settings) {
   const settingsMap = {};
   (settings || []).forEach((setting) => {
@@ -6352,7 +6356,7 @@ async function createTelegramMemo(db, user, content) {
     VALUES (?, ?, ?, ?)
   `).bind(user.id, content, visibility, now).run();
   const memoId = insertResult.meta.last_row_id;
-  const tagNames = extractTagNames(content);
+  const tagNames = extractTagNamesFromMemoContent(content);
   await ensureMemoTags(db, memoId, tagNames, user.id);
   return {
     memoId,

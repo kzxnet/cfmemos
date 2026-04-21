@@ -4,9 +4,7 @@ import { useParams } from "react-router-dom";
 import MemoFilter from "@/components/MemoFilter";
 import MemoDetailModal from "@/components/MemoDetailModal";
 import { DEFAULT_MEMO_LIMIT } from "@/helpers/consts";
-import { getTimeStampByDate } from "@/helpers/datetime";
 import useCurrentUser from "@/hooks/useCurrentUser";
-import { TAG_REG } from "@/labs/marked/parser";
 import { useFilterStore, useGlobalStore, useMemoStore } from "@/store/module";
 import { extractUsernameFromName } from "@/store/v1";
 import { useTranslate } from "@/utils/i18n";
@@ -23,8 +21,7 @@ const MemoList: React.FC = () => {
   const { loadingStatus, memos } = memoStore.state;
   const systemStatus = globalStore.state.systemStatus;
   const user = useCurrentUser();
-  const { tag: tagQuery, duration, text: textQuery, visibility } = filter;
-  const showMemoFilter = Boolean(tagQuery || (duration && duration.from < duration.to) || textQuery || visibility);
+  const { tag: tagQuery, duration, text: textQuery } = filter;
   const username = params.username || extractUsernameFromName(user.name);
 
   const fetchMoreRef = useRef<HTMLSpanElement>(null);

@@ -144,3 +144,15 @@ export const getMatchedNodes = (markdownStr: string): MatchedNode[] => {
 
   return matchedNodeList;
 };
+
+export const getMatchedTagNames = (markdownStr: string): string[] => {
+  const tagNameSet = new Set<string>();
+
+  for (const node of getMatchedNodes(markdownStr)) {
+    if (node.parserName === "tag") {
+      tagNameSet.add(node.matchedContent.slice(1));
+    }
+  }
+
+  return Array.from(tagNameSet);
+};

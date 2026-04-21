@@ -1,12 +1,12 @@
 import { Select, Option, Button, IconButton, Divider } from "@mui/joy";
-import { isNumber, last, uniq, uniqBy } from "lodash-es";
+import { isNumber, last, uniqBy } from "lodash-es";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 import useLocalStorage from "react-use/lib/useLocalStorage";
 import { TAB_SPACE_WIDTH, UNKNOWN_ID, VISIBILITY_SELECTOR_ITEMS } from "@/helpers/consts";
 import useCurrentUser from "@/hooks/useCurrentUser";
-import { getMatchedNodes } from "@/labs/marked";
+import { getMatchedTagNames } from "@/labs/marked";
 import { useGlobalStore, useMemoStore, useResourceStore, useTagStore } from "@/store/module";
 import { useUserV1Store } from "@/store/v1";
 import { Resource } from "@/types/proto/api/v2/resource_service";
@@ -342,8 +342,7 @@ const MemoEditor = (props: Props) => {
     }
 
     // Upsert tag with the content.
-    const matchedNodes = getMatchedNodes(content);
-    const tagNameList = uniq(matchedNodes.filter((node) => node.parserName === "tag").map((node) => node.matchedContent.slice(1)));
+    const tagNameList = getMatchedTagNames(content);
     for (const tagName of tagNameList) {
       try {
         await tagStore.upsertTag(tagName);
